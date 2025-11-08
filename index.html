@@ -15,6 +15,7 @@
   a {text-decoration:none;color:#0066cc;font-weight:500;}
   a:hover {text-decoration:underline;}
   .error {color:#c33;background:#fee;padding:1rem;border-radius:4px;margin:1rem 0;}
+  .meta {font-size:0.85rem;color:#666;margin-top:0.5rem;}
 </style>
 </head>
 <body>
@@ -54,29 +55,16 @@ const prompts = {
 async function fetchRFIs() {
   try {
     const res = await fetch(LAMBDA_ENDPOINT);
-    if (!res.ok) throw new Error(`Lambda endpoint error: ${res.status}`);
+    if (!res.ok) throw new Error(`Lambda error: ${res.status}`);
     const data = await res.json();
     
-    console.log("Lambda response:", data); // Debug log
+    console.log("Lambda response:", data);
     
-    // Adapt to whatever structure your Lambda returns
-    // Common patterns:
-    let opportunities = data.opportunities || data.data || data.contracts || data;
-    
-    // If it's not an array, wrap it
-    if (!Array.isArray(opportunities)) {
-      opportunities = [opportunities];
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to fetch opportunities');
     }
     
-    // Map to our expected format
-    return opportunities.map(opp => ({
-      title: opp.title || opp.name || opp.solicitation_title || "Untitled",
-      agency: opp.agency || opp.department || opp.organization || "Unknown Agency",
-      description: (opp.description || opp.desc || opp.summary || opp.details || "").slice(0, 1000),
-      url: opp.url || opp.link || opp.sam_url || `https://sam.gov`,
-      setAside: opp.setAside || opp.set_aside || opp.typeOfSetAside || "None",
-      naics: opp.naics || opp.naicsCode || opp.naics_code || "N/A"
-    }));
+    return data.opportunities || [];
   } catch(e) {
     console.error("Fetch error:", e);
     throw e;
@@ -86,7 +74,7 @@ async function fetchRFIs() {
 // ==== GEMINI CALL ====
 async function analyze(rfi, industry) {
   if(GEMINI_API_KEY === "YOUR_GEMINI_KEY_HERE") {
-    return {summary:"⚠️ Add your Gemini API key in the HTML file", score:0};
+    return {summary:"⚠️ Add your Gemini API key", score:0};
   }
   
   const p = prompts[industry];
@@ -149,6 +137,7 @@ function render(list) {
       <div><b>${r.title}</b><br><small>${r.agency} • ${r.setAside} • ${r.naics}</small></div>
       <p>${r.summary}</p>
       <div class="score">${r.score}</div>
+      <div class="meta">Posted: ${r.postedDate ? new Date(r.postedDate).toLocaleDateString() : 'N/A'}</div>
       <a href="${r.url}" target="_blank">View on SAM.gov →</a>`;
     feed.appendChild(c);
   });
@@ -158,11 +147,11 @@ function render(list) {
 async function run() {
   try {
     const industry = document.getElementById("industry").value;
-    document.getElementById("feed").innerHTML = "Fetching RFIs from Lambda…";
+    document.getElementById("feed").innerHTML = "Fetching RFIs from SAM.gov…";
     const rfis = await fetchRFIs(); 
     
     if(rfis.length === 0) {
-      document.getElementById("feed").innerHTML = "<div class='error'>No opportunities returned from Lambda endpoint</div>";
+      document.getElementById("feed").innerHTML = "<div class='error'>No opportunities found</div>";
       return;
     }
     
@@ -175,7 +164,7 @@ async function run() {
       render(results);
     }
   } catch(e) {
-    document.getElementById("feed").innerHTML = `<div class="error"><b>Error:</b> ${e.message}<br><br>Check the browser console for more details.</div>`;
+    document.getElementById("feed").innerHTML = `<div class="error"><b>Error:</b> ${e.message}</div>`;
   }
 }
 
