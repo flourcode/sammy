@@ -3,16 +3,17 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>SAM.gov RFI Agent – Minimal Multi-Industry</title>
+<title>SAM.gov RFI Agent</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
 <style>
-  body {font-family:'Inter',sans-serif;background:#fafafa;color:#222;margin:2rem;}
+  body {font-family:'Inter',sans-serif;background:#fafafa;color:#222;margin:2rem;max-width:900px;}
   h1 {font-size:1.5rem;margin-bottom:.5rem;}
   select {font-size:1rem;padding:.4rem .6rem;margin-bottom:1rem;}
   .card {background:#fff;border:1px solid #ddd;border-radius:8px;
          padding:1rem;margin-bottom:1rem;box-shadow:0 2px 4px rgba(0,0,0,.05);}
   .score {font-weight:700;font-size:1.5rem;text-align:right;}
-  a {text-decoration:none;color:#111;font-weight:500;}
+  a {text-decoration:none;color:#0066cc;font-weight:500;}
+  a:hover {text-decoration:underline;}
   .error {color:#c33;background:#fee;padding:1rem;border-radius:4px;margin:1rem 0;}
 </style>
 </head>
@@ -30,8 +31,8 @@
 
 <script type="module">
 // ==== CONFIG ====
-const GEMINI_API_KEY = "YOUR_GEMINI_KEY_HERE"; //  <- paste your key
-const SAM_API_KEY = "SAM-882bb510-6994-498c-9fc3-2ed4f2766ae7"; // Get from https://open.gsa.gov/api/get-opportunities-public-api/
+const GEMINI_API_KEY = "YOUR_GEMINI_KEY_HERE";
+const LAMBDA_ENDPOINT = "https://jcsmad2nf7gbhxyarmpykpmdwm0bafge.lambda-url.us-east-1.on.aws/contracts";
 
 // ==== PROMPT TEMPLATES ====
 const prompts = {
@@ -52,104 +53,100 @@ const prompts = {
 // ==== DATA FETCH ====
 async function fetchRFIs() {
   try {
-    // Updated endpoint - correct as of 2024
-    const url = "https://api.sam.gov/opportunities/v2/search?api_key=" + SAM_API_KEY + 
-                "&postedFrom=01/01/2024&postedTo=12/31/2025&ptype=r&limit=5";
+    const res = await fetch(LAMBDA_ENDPOINT);
+    if (!res.ok) throw new Error(`Lambda endpoint error: ${res.status}`);
+    const data = await res.json();
     
-    const res = await fetch(url); 
+    console.log("Lambda response:", data); // Debug log
     
-    if(!res.ok) {
-      // Try without API key (public access may work for some endpoints)
-      const publicUrl = "https://api.sam.gov/opportunities/v2/search?postedFrom=01/01/2024&postedTo=12/31/2025&ptype=r&limit=5";
-      const publicRes = await fetch(publicUrl);
-      if(!publicRes.ok) throw new Error(`SAM.gov API error: ${publicRes.status}. You may need an API key from https://open.gsa.gov/api/get-opportunities-public-api/`);
-      const j = await publicRes.json();
-      return parseOpportunities(j);
+    // Adapt to whatever structure your Lambda returns
+    // Common patterns:
+    let opportunities = data.opportunities || data.data || data.contracts || data;
+    
+    // If it's not an array, wrap it
+    if (!Array.isArray(opportunities)) {
+      opportunities = [opportunities];
     }
     
-    const j = await res.json();
-    return parseOpportunities(j);
+    // Map to our expected format
+    return opportunities.map(opp => ({
+      title: opp.title || opp.name || opp.solicitation_title || "Untitled",
+      agency: opp.agency || opp.department || opp.organization || "Unknown Agency",
+      description: (opp.description || opp.desc || opp.summary || opp.details || "").slice(0, 1000),
+      url: opp.url || opp.link || opp.sam_url || `https://sam.gov`,
+      setAside: opp.setAside || opp.set_aside || opp.typeOfSetAside || "None",
+      naics: opp.naics || opp.naicsCode || opp.naics_code || "N/A"
+    }));
   } catch(e) {
-    console.error("Fetch error:",e);
+    console.error("Fetch error:", e);
     throw e;
   }
 }
 
-function parseOpportunities(data) {
-  const opps = data.opportunitiesData || [];
-  return opps.map(o => ({
-    title: o.title || "Untitled",
-    agency: o.fullParentPathName || o.department || o.officeAddress?.city || "Unknown Agency",
-    desc: (o.description || o.additionalInfoText || "(no description)").slice(0, 1000),
-    url: `https://sam.gov/opp/${o.noticeId}/view`,
-    setAside: o.typeOfSetAsideDescription || o.typeOfSetAside || "None",
-    naics: o.naicsCode || "N/A"
-  }));
-}
-
 // ==== GEMINI CALL ====
-async function analyze(rfi,industry) {
+async function analyze(rfi, industry) {
   if(GEMINI_API_KEY === "YOUR_GEMINI_KEY_HERE") {
-    return {summary:"⚠️ Please add your Gemini API key in the code",score:0};
+    return {summary:"⚠️ Add your Gemini API key in the HTML file", score:0};
   }
   
-  const p=prompts[industry];
-  const prompt=`${p.desc}
+  const p = prompts[industry];
+  const prompt = `${p.desc}
 
-Return ONLY valid JSON with no markdown formatting, no code blocks:
-{"summary":"brief summary here", "score":85}
+Return ONLY valid JSON with no markdown:
+{"summary":"brief summary", "score":85}
 
 ${p.draft}
 
-RFI Details:
 Title: ${rfi.title}
 Agency: ${rfi.agency}
 Set-Aside: ${rfi.setAside}
 NAICS: ${rfi.naics}
-Description: ${rfi.desc}`;
+Description: ${rfi.description}`;
 
   try {
-    const r=await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key="+GEMINI_API_KEY,
-      {method:"POST",headers:{"Content-Type":"application/json"},
-       body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})}
+    const r = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({contents: [{parts: [{text: prompt}]}]})
+      }
     );
     
-    if(!r.ok) throw new Error(`Gemini API error: ${r.status}`);
+    if(!r.ok) throw new Error(`Gemini error: ${r.status}`);
     
-    const j=await r.json();
-    let text=j.candidates?.[0]?.content?.parts?.[0]?.text||"{}";
-    
-    // Strip markdown code blocks if present
+    const j = await r.json();
+    let text = j.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
     const parsed = JSON.parse(text);
     return {
-      summary: parsed.summary || "No summary available",
+      summary: parsed.summary || "No summary",
       score: Math.min(100, Math.max(0, parseInt(parsed.score) || 0))
     };
   } catch(e) {
-    console.error("Analysis error:",e);
-    return {summary:`Error: ${e.message}`,score:0};
+    console.error("Analysis error:", e);
+    return {summary: `Error: ${e.message}`, score: 0};
   }
 }
 
 // ==== RENDER ====
-function render(list){
-  const feed=document.getElementById("feed"); 
-  feed.innerHTML="";
+function render(list) {
+  const feed = document.getElementById("feed"); 
+  feed.innerHTML = "";
   
   if(list.length === 0) {
-    feed.innerHTML = "<div class='error'>No RFIs found. Try adjusting the date range or check if you need a SAM.gov API key.</div>";
+    feed.innerHTML = "<div class='error'>No RFIs found</div>";
     return;
   }
   
-  list.forEach(r=>{
-    const c=document.createElement("div"); c.className="card";
-    const color=r.score>=80?"#d2f8d2":r.score>=60?"#fff6b3":"#f8d2d2";
-    c.style.background=color;
-    c.innerHTML=`
-      <div><b>${r.title}</b><br>${r.agency} • ${r.setAside} • ${r.naics}</div>
+  list.forEach(r => {
+    const c = document.createElement("div");
+    c.className = "card";
+    const color = r.score >= 80 ? "#d2f8d2" : r.score >= 60 ? "#fff6b3" : "#f8d2d2";
+    c.style.background = color;
+    c.innerHTML = `
+      <div><b>${r.title}</b><br><small>${r.agency} • ${r.setAside} • ${r.naics}</small></div>
       <p>${r.summary}</p>
       <div class="score">${r.score}</div>
       <a href="${r.url}" target="_blank">View on SAM.gov →</a>`;
@@ -158,30 +155,31 @@ function render(list){
 }
 
 // ==== MAIN ====
-async function run(){
+async function run() {
   try {
-    const industry=document.getElementById("industry").value;
-    document.getElementById("feed").innerHTML="Fetching RFIs from SAM.gov…";
-    const rfis=await fetchRFIs(); 
-    const results=[];
+    const industry = document.getElementById("industry").value;
+    document.getElementById("feed").innerHTML = "Fetching RFIs from Lambda…";
+    const rfis = await fetchRFIs(); 
     
-    document.getElementById("feed").innerHTML=`Analyzing ${rfis.length} RFIs…`;
+    if(rfis.length === 0) {
+      document.getElementById("feed").innerHTML = "<div class='error'>No opportunities returned from Lambda endpoint</div>";
+      return;
+    }
     
-    for(const r of rfis){
-      const a=await analyze(r,industry);
-      results.push({...r,...a});
+    const results = [];
+    document.getElementById("feed").innerHTML = `Analyzing ${rfis.length} RFIs with AI…`;
+    
+    for(const r of rfis) {
+      const a = await analyze(r, industry);
+      results.push({...r, ...a});
       render(results);
     }
   } catch(e) {
-    document.getElementById("feed").innerHTML=`<div class="error"><b>Error:</b> ${e.message}<br><br>
-    <b>Need a SAM.gov API key?</b><br>
-    1. Visit <a href="https://open.gsa.gov/api/get-opportunities-public-api/" target="_blank">https://open.gsa.gov/api/get-opportunities-public-api/</a><br>
-    2. Register for a free API key<br>
-    3. Add it to the code where it says SAM_API_KEY</div>`;
+    document.getElementById("feed").innerHTML = `<div class="error"><b>Error:</b> ${e.message}<br><br>Check the browser console for more details.</div>`;
   }
 }
 
-document.getElementById("industry").addEventListener("change",run);
+document.getElementById("industry").addEventListener("change", run);
 run();
 </script>
 </body>
